@@ -3,15 +3,15 @@ unit hnefatafl_game;
 interface
 
 uses
-  Raylib, SysUtils, Math, Generics.Collections;
+  Raylib, SysUtils, RayMath, Math, Generics.Collections;
 
 const
   BOARD_SIZE = 11;
-  CELL_SIZE = 60;
+  CELL_SIZE = 64;
   MARGIN = 50;
   SCREEN_WIDTH = BOARD_SIZE * CELL_SIZE + 2 * MARGIN;
   SCREEN_HEIGHT = BOARD_SIZE * CELL_SIZE + 2 * MARGIN + 40;
-  ANIMATION_SPEED = 3.0;
+  ANIMATION_SPEED = 200; // пикселов в секунду (постоянная скорость)
 
   // Piece types
   EMPTY = ' ';
@@ -35,14 +35,15 @@ type
 
   TAnimation = record
     Active: Boolean;
-    FromX, FromY: Single;
-    ToX, ToY: Single;
-    Progress: Single;
+    FromPos, ToPos: TVector2; // Позиции в пикселях
+    Progress: Single; // 0.0 - 1.0
     Piece: Char;
+    Duration: Single; // Длительность анимации в секундах
   end;
 
   TGameState = record
     Board: array[0..BOARD_SIZE-1, 0..BOARD_SIZE-1] of Char;
+    KingTexture, AttackerTexture, DeffenderTexture, Bg, BgMap: TTexture;
     AttackerTurn: Boolean;
     GameOver: Boolean;
     Winner: Char;
@@ -74,11 +75,20 @@ implementation
 procedure InitializeGame(var State: TGameState);
 var
   i, j: Integer;
+
 begin
   // Initialize empty board
   for i := 0 to BOARD_SIZE - 1 do
     for j := 0 to BOARD_SIZE - 1 do
-      State.Board[i][j] := EMPTY;
+      begin
+        State.Board[i][j] := EMPTY;
+      end;
+
+  State.KingTexture := LoadTexture('data/king.png');
+  State.AttackerTexture := LoadTexture('data/attacker.png');
+  State.DeffenderTexture := LoadTexture('data/deffener.png');
+  State.Bg := LoadTexture('data/bg.png');
+  State.BgMap := LoadTexture('data/map.png');
 
   // Mark the corners
   State.Board[0][0] := CORNER;
@@ -136,6 +146,7 @@ function IsValidMove(var State: TGameState; FromRow, FromCol, ToRow, ToCol: Inte
 var
   i, Start, End_: Integer;
   Piece: Char;
+  MaxSteps: Integer;
 begin
   Result := False;
 
@@ -167,6 +178,16 @@ begin
   if (FromRow <> ToRow) and (FromCol <> ToCol) then
     Exit;
 
+  // Set maximum steps based on piece type
+  if Piece = KING then
+    MaxSteps := 3  // King can move up to 3 spaces
+  else
+    MaxSteps := BOARD_SIZE; // Other pieces can move any distance
+
+  // Check if move distance exceeds maximum allowed steps
+  if (Abs(FromRow - ToRow) > MaxSteps) or (Abs(FromCol - ToCol) > MaxSteps) then
+    Exit;
+
   // Check if the path is clear
   if FromRow = ToRow then
   begin
@@ -181,6 +202,10 @@ begin
       Start := ToCol + 1;
       End_ := FromCol;
     end;
+
+    // Check if move exceeds maximum steps
+    if (End_ - Start + 1) > MaxSteps then
+      Exit;
 
     for i := Start to End_ - 1 do
     begin
@@ -202,6 +227,10 @@ begin
       Start := ToRow + 1;
       End_ := FromRow;
     end;
+
+    // Check if move exceeds maximum steps
+    if (End_ - Start + 1) > MaxSteps then
+      Exit;
 
     for i := Start to End_ - 1 do
     begin
@@ -412,18 +441,25 @@ begin
 end;
 
 function MakeMove(var State: TGameState; FromRow, FromCol, ToRow, ToCol: Integer): Boolean;
+var
+  Distance: Single;
 begin
   Result := False;
-
   if not IsValidMove(State, FromRow, FromCol, ToRow, ToCol) then
     Exit;
 
-  // Start animation
+  // Calculate animation duration based on distance
+  State.Animation.FromPos := Vector2Create(
+    MARGIN + FromCol * CELL_SIZE + CELL_SIZE / 2,
+    MARGIN + FromRow * CELL_SIZE + CELL_SIZE / 2);
+  State.Animation.ToPos := Vector2Create(
+    MARGIN + ToCol * CELL_SIZE + CELL_SIZE / 2,
+    MARGIN + ToRow * CELL_SIZE + CELL_SIZE / 2);
+
+  Distance := Vector2Distance(State.Animation.FromPos, State.Animation.ToPos);
+  State.Animation.Duration := Distance / ANIMATION_SPEED;
+
   State.Animation.Active := True;
-  State.Animation.FromX := FromCol;
-  State.Animation.FromY := FromRow;
-  State.Animation.ToX := ToCol;
-  State.Animation.ToY := ToRow;
   State.Animation.Progress := 0.0;
   State.Animation.Piece := State.Board[FromRow][FromCol];
 
@@ -431,26 +467,32 @@ begin
 end;
 
 procedure UpdateGame(var State: TGameState);
+var
+  DeltaTime: Single;
 begin
   if State.Animation.Active then
   begin
-    State.Animation.Progress := State.Animation.Progress + ANIMATION_SPEED * GetFrameTime();
+    DeltaTime := GetFrameTime();
+    State.Animation.Progress := State.Animation.Progress + (DeltaTime / State.Animation.Duration);
+
     if State.Animation.Progress >= 1.0 then
     begin
-      // After animation completes, move the piece
-      State.Board[Trunc(State.Animation.ToY)][Trunc(State.Animation.ToX)] := State.Animation.Piece;
+      State.Animation.Progress := 1.0;
+      // Завершение анимации и обновление состояния игры
+      State.Board[Trunc((State.Animation.ToPos.Y - MARGIN) / CELL_SIZE)][Trunc((State.Animation.ToPos.X - MARGIN) / CELL_SIZE)] := State.Animation.Piece;
 
-      // Clear the original position (if not throne)
-      if (Trunc(State.Animation.FromY) = BOARD_SIZE div 2) and
-         (Trunc(State.Animation.FromX) = BOARD_SIZE div 2) then
-        State.Board[Trunc(State.Animation.FromY)][Trunc(State.Animation.FromX)] := THRONE
+      // Очистка исходной позиции
+      if (Trunc((State.Animation.FromPos.Y - MARGIN) / CELL_SIZE) = BOARD_SIZE div 2) and
+         (Trunc((State.Animation.FromPos.X - MARGIN) / CELL_SIZE) = BOARD_SIZE div 2) then
+        State.Board[Trunc((State.Animation.FromPos.Y - MARGIN) / CELL_SIZE)][Trunc((State.Animation.FromPos.X - MARGIN) / CELL_SIZE)] := THRONE
       else
-        State.Board[Trunc(State.Animation.FromY)][Trunc(State.Animation.FromX)] := EMPTY;
+        State.Board[Trunc((State.Animation.FromPos.Y - MARGIN) / CELL_SIZE)][Trunc((State.Animation.FromPos.X - MARGIN) / CELL_SIZE)] := EMPTY;
 
-      // Check captures after the real move
-      CheckCaptures(State, Trunc(State.Animation.ToY), Trunc(State.Animation.ToX));
+      // Проверка захватов
+      CheckCaptures(State,
+        Trunc((State.Animation.ToPos.Y - MARGIN) / CELL_SIZE),
+        Trunc((State.Animation.ToPos.X - MARGIN) / CELL_SIZE));
 
-      // Check if game is over
       if IsGameOver(State) then
         State.GameOver := True
       else
@@ -963,12 +1005,18 @@ procedure DrawBoard(var State: TGameState);
 var
   i, j, X, Y: Integer;
   Piece: Char;
-  AnimX, AnimY: Single;
-  ABC: String;
+  AnimPos: TVector2;
   Dirs: array[0..3] of TVector2 = ((X:0; Y:-1), (X:1; Y:0), (X:0; Y:1), (X:-1; Y:0));
   Dir, Steps, NewRow, NewCol: Integer;
+  CurrentPiece: Char;
+  Abc: String;
 begin
-  // Draw board cells
+
+  // Draw board background
+  DrawTexturePro(State.Bg,RectangleCreate(0,0, BOARD_SIZE * 64, BOARD_SIZE * 64),
+                          RectangleCreate(MARGIN,MARGIN, BOARD_SIZE * 64, BOARD_SIZE * 64),
+                          Vector2Create(0,0), 0, WHITE);
+
   for i := 0 to BOARD_SIZE - 1 do
   begin
     for j := 0 to BOARD_SIZE - 1 do
@@ -976,42 +1024,53 @@ begin
       X := MARGIN + j * CELL_SIZE;
       Y := MARGIN + i * CELL_SIZE;
 
+     // if (i = 5) and (j=5) then DrawRectangle(X , Y ,  CELL_SIZE, CELL_SIZE, RED);
+
+
+
       // Draw cell background
-      if (i = State.SelectedRow) and (j = State.SelectedCol) then
-        DrawRectangle(X, Y, CELL_SIZE, CELL_SIZE, ColorCreate(200, 200, 100, 255))
+     { if (i = State.SelectedRow) and (j = State.SelectedCol) then
+        DrawRectangle(X, Y, CELL_SIZE, CELL_SIZE, ColorCreate(200, 200, 100, 125)) // Highlight selected
       else if (i + j) mod 2 = 0 then
-        DrawRectangle(X, Y, CELL_SIZE, CELL_SIZE, ColorCreate(210, 180, 140, 255))
+        DrawRectangle(X, Y, CELL_SIZE, CELL_SIZE, ColorCreate(210, 180, 140, 126)) // Light cells
       else
-        DrawRectangle(X, Y, CELL_SIZE, CELL_SIZE, ColorCreate(139, 69, 19, 255));
+        DrawRectangle(X, Y, CELL_SIZE, CELL_SIZE, ColorCreate(139, 69, 19, 125));  // Dark cells
+      }
+     //   DrawTexture(State.BoardTexture[i][j] ,X,Y, WHITE);
 
-      DrawRectangleLines(X, Y, CELL_SIZE, CELL_SIZE, BLACK);
+      DrawRectangleLines(X, Y, CELL_SIZE, CELL_SIZE, GRAY);
 
-      // Draw special squares
+      // Draw special squares (throne and corners)
       if (i = BOARD_SIZE div 2) and (j = BOARD_SIZE div 2) then
       begin
-        if State.Board[i][j] = THRONE then
-          DrawCircle(X + CELL_SIZE div 2, Y + CELL_SIZE div 2, CELL_SIZE div 3, GOLD)
-        else if State.Board[i][j] <> KING then
-          DrawCircle(X + CELL_SIZE div 2, Y + CELL_SIZE div 2, CELL_SIZE div 3, ColorCreate(255, 215, 0, 100));
+         DrawRectangle(X , Y ,  CELL_SIZE, CELL_SIZE, ColorCreate(230, 41, 55, 180));
+        //if State.Board[i][j] = THRONE then
+          //DrawCircle(X + CELL_SIZE div 2, Y + CELL_SIZE div 2, CELL_SIZE div 3, GOLD)
+        // DrawRectangle(X , Y ,  CELL_SIZE, CELL_SIZE, RED)
+       // else
+       //  if State.Board[i][j] <> KING then
+       //  DrawRectangle(X , Y ,  CELL_SIZE, CELL_SIZE, RED);
+        //  DrawCircle(X + CELL_SIZE div 2, Y + CELL_SIZE div 2, CELL_SIZE div 3, ColorCreate(255, 215, 0, 100));
       end
       else if ((i = 0) and (j = 0)) or
               ((i = 0) and (j = BOARD_SIZE-1)) or
               ((i = BOARD_SIZE-1) and (j = 0)) or
               ((i = BOARD_SIZE-1) and (j = BOARD_SIZE-1)) then
       begin
-        DrawCircle(X + CELL_SIZE div 2, Y + CELL_SIZE div 2, CELL_SIZE div 3, GRAY);
+        DrawRectangle(X , Y ,  CELL_SIZE, CELL_SIZE, ColorCreate(102, 191, 255, 180));
+        //DrawCircle(X + CELL_SIZE div 2, Y + CELL_SIZE div 2, CELL_SIZE div 3, GRAY);
       end;
     end;
   end;
 
-  // Draw possible moves if piece is selected
+  // Draw possible moves for selected piece
   if (State.SelectedRow <> -1) and (State.SelectedCol <> -1) then
   begin
-    Piece := State.Board[State.SelectedRow][State.SelectedCol];
+    CurrentPiece := State.Board[State.SelectedRow][State.SelectedCol];
 
     // Check if selected piece belongs to current player
-    if (State.AttackerTurn and (Piece = ATTACKER)) or
-       (not State.AttackerTurn and ((Piece = DEFENDER) or (Piece = KING))) then
+    if (State.AttackerTurn and (CurrentPiece = ATTACKER)) or
+       (not State.AttackerTurn and ((CurrentPiece = DEFENDER) or (CurrentPiece = KING))) then
     begin
       // Check all possible directions
       for Dir := 0 to 3 do
@@ -1019,18 +1078,17 @@ begin
         Steps := 1;
         while True do
         begin
-          NewRow := Trunc(State.SelectedRow + Dirs[Dir].Y * Steps);
-          NewCol := TRunc(State.SelectedCol + Dirs[Dir].X * Steps);
+          NewRow := State.SelectedRow + Trunc(Dirs[Dir].Y * Steps);
+          NewCol := State.SelectedCol + Trunc(Dirs[Dir].X * Steps);
 
           // Check if move is valid
           if not IsValidMove(State, State.SelectedRow, State.SelectedCol, NewRow, NewCol) then
             Break;
 
           // Draw possible move indicator
-          X := MARGIN + NewCol * CELL_SIZE;
-          Y := MARGIN + NewRow * CELL_SIZE;
-          DrawCircle(X + CELL_SIZE div 2, Y + CELL_SIZE div 2, 10,
-            ColorCreate(0, 255, 0, 150)); // Green semi-transparent circle
+          X := MARGIN + NewCol * CELL_SIZE + CELL_SIZE div 2;
+          Y := MARGIN + NewRow * CELL_SIZE + CELL_SIZE div 2;
+          DrawCircle(X, Y, 10, ColorCreate(130, 130, 130, 150)); // Green semi-transparent circle
 
           Inc(Steps);
         end;
@@ -1038,76 +1096,98 @@ begin
     end;
   end;
 
-  // Draw all pieces except the animated one (if any)
+  DrawTexturePro(State.BgMap,RectangleCreate(0,0, BOARD_SIZE * 64, BOARD_SIZE * 64),
+                          RectangleCreate(MARGIN,MARGIN, BOARD_SIZE * 64, BOARD_SIZE * 64),
+                          Vector2Create(0,0), 0, WHITE);
+
+  // Draw all pieces except the animated one
   for i := 0 to BOARD_SIZE - 1 do
   begin
     for j := 0 to BOARD_SIZE - 1 do
     begin
-      // Skip animated piece
+      // Skip animated piece and empty cells
       if State.Animation.Active and
-         (i = Trunc(State.Animation.FromY)) and (j = Trunc(State.Animation.FromX)) then
+         (i = Trunc((State.Animation.FromPos.Y - MARGIN) / CELL_SIZE)) and
+         (j = Trunc((State.Animation.FromPos.X - MARGIN) / CELL_SIZE)) then
         Continue;
 
-      X := MARGIN + j * CELL_SIZE;
-      Y := MARGIN + i * CELL_SIZE;
+      X := MARGIN + j * CELL_SIZE + CELL_SIZE div 2;
+      Y := MARGIN + i * CELL_SIZE + CELL_SIZE div 2;
       Piece := State.Board[i][j];
 
       case Piece of
         KING:
           begin
-            DrawCircle(X + CELL_SIZE div 2, Y + CELL_SIZE div 2, CELL_SIZE div 3 - 5, GOLD);
-            DrawText('K', X + CELL_SIZE div 2 - 8, Y + CELL_SIZE div 2 - 10, 20, BLACK);
+            //DrawCircle(X, Y, CELL_SIZE div 3 - 5, GOLD);
+           // DrawText('K', X - 8, Y - 10, 20, BLACK);
+            DrawTexture(State.KingTexture, X - 32,Y - 32,WHITE);
           end;
         DEFENDER:
           begin
-            DrawCircle(X + CELL_SIZE div 2, Y + CELL_SIZE div 2, CELL_SIZE div 3 - 5, BLUE);
-            DrawText('D', X + CELL_SIZE div 2 - 8, Y + CELL_SIZE div 2 - 10, 20, WHITE);
+            // DrawCircle(X, Y, CELL_SIZE div 3 - 5, BLUE);
+            // DrawText('D', X - 8, Y - 10, 20, WHITE);
+            DrawTexture(State.DeffenderTexture , X - 32,Y - 32,WHITE);
           end;
         ATTACKER:
           begin
-            DrawCircle(X + CELL_SIZE div 2, Y + CELL_SIZE div 2, CELL_SIZE div 3 - 5, RED);
-            DrawText('A', X + CELL_SIZE div 2 - 8, Y + CELL_SIZE div 2 - 10, 20, WHITE);
+            //DrawCircle(X, Y, CELL_SIZE div 3 - 5, RED);
+            //DrawText('A', X - 8, Y - 10, 20, WHITE);
+            DrawTexture(State.AttackerTexture, X - 32,Y - 32,WHITE);
           end;
       end;
     end;
   end;
 
-  // Draw animated piece on top of others
+  // Draw animated piece (on top of everything else)
   if State.Animation.Active then
   begin
-    AnimX := MARGIN + (State.Animation.FromX + (State.Animation.ToX - State.Animation.FromX) * State.Animation.Progress) * CELL_SIZE;
-    AnimY := MARGIN + (State.Animation.FromY + (State.Animation.ToY - State.Animation.FromY) * State.Animation.Progress) * CELL_SIZE;
+    AnimPos := Vector2Lerp(State.Animation.FromPos, State.Animation.ToPos, State.Animation.Progress);
 
     case State.Animation.Piece of
       KING:
         begin
-          DrawCircle(Trunc(AnimX + CELL_SIZE div 2), Trunc(AnimY + CELL_SIZE div 2), CELL_SIZE div 3 - 5, GOLD);
-          DrawText('K', Trunc(AnimX + CELL_SIZE div 2 - 8), Trunc(AnimY + CELL_SIZE div 2 - 10), 20, BLACK);
+          DrawTexture(State.KingTexture, Trunc(AnimPos.X - 32), Trunc(AnimPos.Y - 32) ,WHITE);
+          //DrawCircle(Trunc(AnimPos.X), Trunc(AnimPos.Y), CELL_SIZE div 3 - 5, GOLD);
+          //DrawText('K', Trunc(AnimPos.X) - 8, Trunc(AnimPos.Y) - 10, 20, BLACK);
         end;
       DEFENDER:
         begin
-          DrawCircle(Trunc(AnimX + CELL_SIZE div 2), Trunc(AnimY + CELL_SIZE div 2), CELL_SIZE div 3 - 5, BLUE);
-          DrawText('D', Trunc(AnimX + CELL_SIZE div 2 - 8), Trunc(AnimY + CELL_SIZE div 2 - 10), 20, WHITE);
+          // DrawCircle(Trunc(AnimPos.X), Trunc(AnimPos.Y), CELL_SIZE div 3 - 5, BLUE);
+          // DrawText('D', Trunc(AnimPos.X) - 8, Trunc(AnimPos.Y) - 10, 20, WHITE);
+          DrawTexture(State.DeffenderTexture, Trunc(AnimPos.X - 32), Trunc(AnimPos.Y - 32) ,WHITE);
         end;
       ATTACKER:
         begin
-          DrawCircle(Trunc(AnimX + CELL_SIZE div 2), Trunc(AnimY + CELL_SIZE div 2), CELL_SIZE div 3 - 5, RED);
-          DrawText('A', Trunc(AnimX + CELL_SIZE div 2 - 8), Trunc(AnimY + CELL_SIZE div 2 - 10), 20, WHITE);
+          //DrawCircle(Trunc(AnimPos.X), Trunc(AnimPos.Y), CELL_SIZE div 3 - 5, RED);
+          //DrawText('A', Trunc(AnimPos.X) - 8, Trunc(AnimPos.Y) - 10, 20, WHITE);
+          DrawTexture(State.AttackerTexture, Trunc(AnimPos.X - 32), Trunc(AnimPos.Y - 32) ,WHITE);
         end;
     end;
   end;
+
+
+
 
   // Draw coordinates
   for i := 0 to BOARD_SIZE - 1 do
   begin
     // Column letters at top and bottom
     Abc := Chr(Ord('A') + i);
-    DrawText(PChar(Abc), MARGIN + i * CELL_SIZE + CELL_SIZE div 2 - 5, MARGIN - 25, 20, BLACK);
-    DrawText(PChar(Abc), MARGIN + i * CELL_SIZE + CELL_SIZE div 2 - 5, MARGIN + BOARD_SIZE * CELL_SIZE + 5, 20, BLACK);
+    DrawText(PChar(Abc),
+      MARGIN + i * CELL_SIZE + CELL_SIZE div 2 - 5,
+      MARGIN - 25, 20, BLACK);
+    Abc := Chr(Ord('A') + i);
+    DrawText(PChar(Abc),
+      MARGIN + i * CELL_SIZE + CELL_SIZE div 2 - 5,
+      MARGIN + BOARD_SIZE * CELL_SIZE + 5, 20, BLACK);
 
     // Row numbers on left and right
-    DrawText(PChar(IntToStr(i + 1)), MARGIN - 25, MARGIN + i * CELL_SIZE + CELL_SIZE div 2 - 10, 20, BLACK);
-    DrawText(PChar(IntToStr(i + 1)), MARGIN + BOARD_SIZE * CELL_SIZE + 5, MARGIN + i * CELL_SIZE + CELL_SIZE div 2 - 10, 20, BLACK);
+    DrawText(PChar(IntToStr(i + 1)),
+      MARGIN - 25,
+      MARGIN + i * CELL_SIZE + CELL_SIZE div 2 - 10, 20, BLACK);
+    DrawText(PChar(IntToStr(i + 1)),
+      MARGIN + BOARD_SIZE * CELL_SIZE + 5,
+      MARGIN + i * CELL_SIZE + CELL_SIZE div 2 - 10, 20, BLACK);
   end;
 end;
 
